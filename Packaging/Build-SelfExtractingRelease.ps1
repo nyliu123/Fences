@@ -1,19 +1,27 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$SevenZipDirectory,
-    [string]$MsBuildPath = 'msbuild.exe'
+    [string]$MsBuildPath = 'msbuild.exe',
+    [string]$SfxModulePath
 )
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $sevenZip = Join-Path $SevenZipDirectory '7z.exe'
-$module = Join-Path $SevenZipDirectory '7z.sfx'
+$module = if ($SfxModulePath) { [System.IO.Path]::GetFullPath($SfxModulePath) } else {
+    Join-Path $projectRoot 'Fences/obj/SfxModule/7z.sfx'
+}
 $vendorLicense = Join-Path $SevenZipDirectory 'License.txt'
 foreach ($path in @($sevenZip, $module, $vendorLicense)) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Missing 7-Zip component: $path" }
 }
+$moduleManifest = [xml][System.IO.File]::ReadAllText($module + '.manifest')
+$executionLevel = $moduleManifest.SelectSingleNode('//*[local-name()="requestedExecutionLevel"]')
+if ($executionLevel.level -ne 'requireAdministrator') {
+    throw 'The release SFX module must request administrator permission for the default Program Files directory.'
+}
 
-& $MsBuildPath (Join-Path $projectRoot 'Fences.sln') /t:Build /p:Configuration=Release /v:minimal /nologo
+& $MsBuildPath (Join-Path $projectRoot 'Fences.sln') /t:Build /p:Configuration=Release '/p:Platform=Any CPU' /v:minimal /nologo
 if ($LASTEXITCODE -ne 0) { throw 'Fences Release build failed.' }
 
 $releaseDirectory = Join-Path $projectRoot 'Fences/bin/Release'
@@ -50,12 +58,18 @@ foreach ($relative in @('Fences.exe.config', 'Fences.Recovery.exe.config')) {
 $licensePath = 'ThirdParty/7-Zip/LICENSE.txt'
 $lgplPath = 'ThirdParty/7-Zip/COPYING.LGPL-2.1.txt'
 $noticePath = 'ThirdParty/7-Zip/NOTICE.txt'
+$patchPath = 'ThirdParty/7-Zip/Build-FencesSfxModule.ps1'
 New-Item -ItemType Directory -Path (Join-Path $staging 'ThirdParty/7-Zip') -Force | Out-Null
 Copy-Item -LiteralPath $vendorLicense -Destination (Join-Path $staging $licensePath)
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Licenses/LGPL-2.1.txt') -Destination (Join-Path $staging $lgplPath)
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Build-FencesSfxModule.ps1') -Destination (Join-Path $staging $patchPath)
 $toolVersion = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($sevenZip).FileVersion
 @"
-This self-extracting archive uses the unmodified official 7-Zip Windows SFX module.
+This archive uses a Fences-customized native 7-Zip Windows SFX module.
+Modification date: 2026-10-19.
+Changes: default output C:\Program Files\Fences; requireAdministrator manifest for extraction.
+The editable output dialog and explicit -o destination override remain supported.
+Fences.exe itself retains its separate asInvoker manifest.
 7-Zip version: $toolVersion
 Copyright (C) 1999-2026 Igor Pavlov.
 License information: LICENSE.txt in this directory.
@@ -64,10 +78,11 @@ Official project and corresponding source downloads:
 https://www.7-zip.org/download.html
 https://github.com/ip7z/7zip
 The SFX module is prepended to the archive; it can be replaced independently.
+Build-FencesSfxModule.ps1 contains the source patch and rebuild instructions.
 Fences itself retains its separate MIT license in the package root.
 "@ | Set-Content -LiteralPath (Join-Path $staging $noticePath) -Encoding utf8
 
-$payload = @($binaries + $documents + @($licensePath, $lgplPath, $noticePath))
+$payload = @($binaries + $documents + @($licensePath, $lgplPath, $noticePath, $patchPath))
 $temporaryOutput = Join-Path (Split-Path $staging) ([guid]::NewGuid().ToString('N') + '.exe')
 Push-Location $staging
 try {

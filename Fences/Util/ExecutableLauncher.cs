@@ -1,7 +1,6 @@
 using System;
 using System.Diagnostics;
 using System.IO;
-using System.Runtime.InteropServices;
 
 namespace NoFences.Util
 {
@@ -29,33 +28,12 @@ namespace NoFences.Util
             var workingDirectory = Path.GetDirectoryName(path);
             if (string.Equals(Path.GetExtension(path), ".lnk", StringComparison.OrdinalIgnoreCase))
             {
-                object shell = null;
-                object shortcut = null;
-                try
-                {
-                    var shellType = Type.GetTypeFromProgID("WScript.Shell");
-                    if (shellType == null)
-                        return null;
-                    shell = Activator.CreateInstance(shellType);
-                    shortcut = ((dynamic)shell).CreateShortcut(path);
-                    target = Environment.ExpandEnvironmentVariables((string)((dynamic)shortcut).TargetPath);
-                    arguments = (string)((dynamic)shortcut).Arguments;
-                    var shortcutDirectory = (string)((dynamic)shortcut).WorkingDirectory;
-                    workingDirectory = string.IsNullOrWhiteSpace(shortcutDirectory)
-                        ? Path.GetDirectoryName(target) : Environment.ExpandEnvironmentVariables(shortcutDirectory);
-                }
-                catch (Exception)
-                {
-                    // Broken or unsupported Shell links do not offer elevation.
+                var shortcut = ShellShortcut.Resolve(path);
+                if (shortcut == null)
                     return null;
-                }
-                finally
-                {
-                    if (shortcut != null && Marshal.IsComObject(shortcut))
-                        Marshal.FinalReleaseComObject(shortcut);
-                    if (shell != null && Marshal.IsComObject(shell))
-                        Marshal.FinalReleaseComObject(shell);
-                }
+                target = shortcut.TargetPath;
+                arguments = shortcut.Arguments;
+                workingDirectory = shortcut.WorkingDirectory;
             }
             var extension = Path.GetExtension(target);
             if (!File.Exists(target) ||

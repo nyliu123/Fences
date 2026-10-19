@@ -212,6 +212,49 @@ namespace NoFences.Model
             }
         }
 
+        public void RecycleItem(FenceInfo info, string itemPath)
+        {
+            RecycleItem(info, itemPath, ItemRecycler.Recycle);
+        }
+
+        internal void RecycleItem(FenceInfo info, string itemPath, Action<string> recycle)
+        {
+            var index = info.Files.FindIndex(path => PathsEqual(path, itemPath));
+            if (index < 0)
+                throw new FileNotFoundException("要删除的项目已不在此分区中。", itemPath);
+            var recordedPath = info.Files[index];
+
+            // Persist first: a metadata write failure must never recycle the actual item.
+            info.Files.RemoveAt(index);
+            try { WriteFence(info); }
+            catch
+            {
+                info.Files.Insert(index, recordedPath);
+                throw;
+            }
+            try
+            {
+                if (ItemExists(itemPath))
+                    recycle(itemPath);
+                if (ItemExists(itemPath))
+                    throw new IOException("项目未能移入回收站，仍保留在原位置。");
+            }
+            catch (Exception exception)
+            {
+                if (ItemExists(itemPath))
+                {
+                    if (!ContainsPath(info.Files, itemPath))
+                        info.Files.Insert(Math.Min(index, info.Files.Count), recordedPath);
+                    try { WriteFence(info); }
+                    catch (Exception saveException)
+                    {
+                        throw new AggregateException("项目仍保留在原位置，但分区记录未能恢复。", exception, saveException);
+                    }
+                }
+                throw;
+            }
+        }
+
         public string RenameItem(FenceInfo info, string itemPath, string newName)
         {
             newName = (newName ?? string.Empty).Trim();

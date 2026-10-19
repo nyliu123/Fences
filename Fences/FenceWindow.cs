@@ -140,6 +140,8 @@ namespace NoFences
             this.DragLeave += FenceWindow_DragLeave;
             InitializeItemReordering();
             InitializeAdministratorMenu();
+            InitializeShortcutLocationMenu();
+            InitializeItemDeleteMenu();
             this.GiveFeedback += FenceWindow_GiveFeedback;
             thumbnailProvider.IconThumbnailLoaded += ThumbnailProvider_IconThumbnailLoaded;
 
@@ -451,9 +453,12 @@ namespace NoFences
             ConfirmTitleEditBeforeContextMenu();
             UpdateItemReorderMenu();
             runAsAdministratorMenuItem.Visible = ExecutableLauncher.CanRunAsAdministrator(contextMenuItem);
+            UpdateShortcutLocationMenu();
 
             var onItem = contextMenuItem != null;
             deleteItemToolStripMenuItem.Visible = onItem;
+            recycleItemMenuItem.Visible = onItem;
+            recycleItemSeparator.Visible = onItem;
             showFileExtensionsToolStripMenuItem.Visible = !onItem;
             lockedToolStripMenuItem.Visible = !onItem;
             minifyToolStripMenuItem.Visible = !onItem;

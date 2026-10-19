@@ -11,6 +11,71 @@ namespace NoFences
     {
         private string contextMenuItem;
         private ToolStripMenuItem runAsAdministratorMenuItem;
+        private ToolStripMenuItem openShortcutLocationMenuItem;
+        private ToolStripMenuItem recycleItemMenuItem;
+        private ToolStripSeparator recycleItemSeparator;
+
+        private void InitializeItemDeleteMenu()
+        {
+            recycleItemMenuItem = new ToolStripMenuItem("删除", null, RecycleContextItem)
+            {
+                Name = "recycleItemMenuItem",
+                Font = deleteItemToolStripMenuItem.Font,
+                AccessibleName = "删除（移入回收站）",
+                ToolTipText = "将项目移入回收站"
+            };
+            recycleItemSeparator = new ToolStripSeparator();
+            var index = appContextMenu.Items.IndexOf(deleteItemToolStripMenuItem);
+            appContextMenu.Items.Insert(index, recycleItemSeparator);
+            appContextMenu.Items.Insert(index + 2, recycleItemMenuItem);
+        }
+
+        private void InitializeShortcutLocationMenu()
+        {
+            openShortcutLocationMenuItem = new ToolStripMenuItem("打开文件所在位置", null, (sender, e) =>
+            {
+                try { ShellShortcut.OpenTargetLocation(contextMenuItem); }
+                catch (Exception exception)
+                {
+                    MessageBox.Show(this, exception.Message, "无法打开所在位置", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            }) { Name = "openShortcutLocationMenuItem" };
+            appContextMenu.Items.Insert(appContextMenu.Items.IndexOf(runAsAdministratorMenuItem), openShortcutLocationMenuItem);
+        }
+
+        private void UpdateShortcutLocationMenu()
+        {
+            var target = ShellShortcut.GetExistingTargetPath(contextMenuItem);
+            openShortcutLocationMenuItem.Visible = target != null;
+            openShortcutLocationMenuItem.Text = Directory.Exists(target) ? "打开文件夹所在位置" : "打开文件所在位置";
+        }
+
+        private void RecycleContextItem(object sender, EventArgs e)
+        {
+            var path = contextMenuItem;
+            if (string.IsNullOrEmpty(path))
+                return;
+            var name = Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+            var question = Directory.Exists(path)
+                ? "将文件夹“" + name + "”及其内容移入回收站？"
+                : "将“" + name + "”移入回收站？";
+            if (MessageBox.Show(this, question, "删除项目", MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+                return;
+            try
+            {
+                if (itemEditor != null)
+                    CancelItemRename();
+                FenceManager.Instance.RecycleItem(fenceInfo, path);
+                selectedItem = hoveringItem = draggedItem = contextMenuItem = null;
+                Refresh();
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception exception)
+            {
+                MessageBox.Show(this, exception.Message, "无法删除项目", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
 
         private void InitializeAdministratorMenu()
         {

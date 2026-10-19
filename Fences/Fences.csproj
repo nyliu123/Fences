@@ -121,6 +121,7 @@
     <Compile Include="Util\DesktopFileAccess.cs" />
     <Compile Include="Util\FenceShutdown.cs" />
     <Compile Include="Util\ExecutableLauncher.cs" />
+    <Compile Include="Util\ShellShortcut.cs" />
     <Compile Include="Util\ExitRecovery.cs" />
     <Compile Include="Util\ItemInsertionLayout.cs" />
     <Compile Include="Util\FileContentComparer.cs" />
@@ -132,6 +133,7 @@
     <Compile Include="Win32\DropShadow.cs" />
     <Compile Include="Win32\GlobalMouseClickMonitor.cs" />
     <Compile Include="Win32\FileDialogMonitor.cs" />
+    <Compile Include="Win32\ItemRecycler.cs" />
     <Compile Include="Win32\IconUtil.cs" />
     <Compile Include="Win32\ShellContextMenu.cs" />
     <Compile Include="Win32\WindowUtil.cs" />
