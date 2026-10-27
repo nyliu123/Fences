@@ -4,6 +4,8 @@ using System.Diagnostics;
 using System.IO;
 using System.Reflection;
 using System.Windows.Forms;
+using System.Drawing;
+using System.Threading;
 using NoFences;
 using NoFences.Model;
 
@@ -12,6 +14,8 @@ internal static class DragDropAndElevationTests
 {
     private const BindingFlags PrivateInstance = BindingFlags.Instance | BindingFlags.NonPublic;
     private static int assertions;
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern IntPtr WindowFromPoint(Point point);
 
     [STAThread]
     private static void Main()
@@ -21,6 +25,7 @@ internal static class DragDropAndElevationTests
         try
         {
             var assembly = typeof(FenceWindow).Assembly;
+            CheckDragGhost(assembly);
             var hostType = assembly.GetType("NoFences.Win32.DesktopWindowHost");
             var hostField = hostType.GetField("desktopHost", BindingFlags.Static | BindingFlags.NonPublic);
             var manager = (FenceManager)Activator.CreateInstance(typeof(FenceManager), PrivateInstance,
@@ -125,6 +130,42 @@ internal static class DragDropAndElevationTests
             DragDropEffects.Move, DragDropEffects.None);
     }
 
+    private static void CheckDragGhost(Assembly assembly)
+    {
+        var type = assembly.GetType("NoFences.DragGhostWindow");
+        var bitmap = new Bitmap(48, 48);
+        using (var graphics = Graphics.FromImage(bitmap)) graphics.Clear(Color.OrangeRed);
+        var offset = new Point(8, 8);
+        using (var ghost = (Form)Activator.CreateInstance(type, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+            null, new object[] { bitmap, offset }, null))
+        {
+            var timer = (System.Windows.Forms.Timer)type.GetField("follow", PrivateInstance).GetValue(ghost);
+            var observedTracking = false;
+            timer.Tick += (sender, e) =>
+            {
+                // Sample in the same tick as the production handler: the user
+                // may still be moving the mouse between separate test statements.
+                var current = Control.MousePosition;
+                if (ghost.Location != new Point(-1000, -1000) &&
+                    Math.Abs(ghost.Left - current.X + offset.X) <= 3 && Math.Abs(ghost.Top - current.Y + offset.Y) <= 3)
+                    observedTracking = true;
+            };
+            ghost.Show();
+            // Deliberately displace it without sending GiveFeedback. The timer
+            // must continue tracking even when another Shell target owns drag feedback.
+            ghost.Location = new Point(-1000, -1000);
+            var watch = Stopwatch.StartNew();
+            while (watch.ElapsedMilliseconds < 150) { Application.DoEvents(); Thread.Sleep(5); }
+            Check(observedTracking && ghost.TopLevel && ghost.TopMost,
+                "drag ghost follows the cursor outside its source without GiveFeedback and remains a top-level overlay");
+            Check(WindowFromPoint(new Point(ghost.Left + 20, ghost.Top + 20)) != ghost.Handle, "drag image does not intercept destination hit testing");
+            ghost.Hide();
+            Check(!timer.Enabled, "hiding the drag image before destination hit testing stops tracking");
+            ghost.Close(); ghost.Dispose();
+            Check(!timer.Enabled, "closing the drag ghost stops its tracking timer");
+        }
+    }
+
     private static void Invoke(FenceWindow window, string method, params object[] args)
     {
         typeof(FenceWindow).GetMethod(method, PrivateInstance).Invoke(window, args);
@@ -133,7 +174,10 @@ internal static class DragDropAndElevationTests
     private static void Check(bool condition, string message)
     {
         if (!condition)
+        {
+            Console.Error.WriteLine("FAIL: " + message);
             throw new Exception("FAIL: " + message);
+        }
         assertions++;
         Console.WriteLine("PASS: " + message);
     }

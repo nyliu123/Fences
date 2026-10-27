@@ -51,6 +51,25 @@ namespace NoFences.Util
             monitor.InspectExistingDialogs();
         }
 
+        internal void Refresh()
+        {
+            if (disposed)
+                return;
+            monitor.InspectExistingDialogs();
+            foreach (var client in clients.Keys.Where(client => !client.IsRunning()).ToList())
+            {
+                clients[client].Dispose();
+                clients.Remove(client);
+            }
+            foreach (var fence in getFences())
+            {
+                fence.PrepareDesktopPathChange();
+                try { Report(FenceManager.Instance.RefreshDesktopAccess(fence.Info)); }
+                catch (Exception exception) { Report(exception); }
+                fence.Refresh();
+            }
+        }
+
         private void OnDialogShown(IntPtr window, uint processId)
         {
             if (disposed || processId == Process.GetCurrentProcess().Id)

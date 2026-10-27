@@ -137,12 +137,15 @@ namespace NoFences
             titleHeight = LogicalToDeviceUnits(logicalTitleHeight);
             
             this.MouseWheel += FenceWindow_MouseWheel;
+            this.MouseUp += (sender, e) => { if (e.Button == MouseButtons.Left) StopScrollbarDrag(); };
+            this.MouseCaptureChanged += (sender, e) => { if (!Capture) StopScrollbarDrag(); };
             this.DragLeave += FenceWindow_DragLeave;
             InitializeItemReordering();
             InitializeAdministratorMenu();
             InitializeShortcutLocationMenu();
             InitializeItemDeleteMenu();
             this.GiveFeedback += FenceWindow_GiveFeedback;
+            this.QueryContinueDrag += TrackOriginalDrag;
             thumbnailProvider.IconThumbnailLoaded += ThumbnailProvider_IconThumbnailLoaded;
 
             ReloadFonts();
@@ -278,6 +281,7 @@ namespace NoFences
             {
 
                 var pt = PointToClient(new Point(unchecked((int)m.LParam.ToInt64())));
+                if (IsScrollbarPoint(pt)) { m.Result = new IntPtr(HTCLIENT); return; }
 
                 if ((int)m.Result == HTCLIENT && pt.Y < titleHeight)     // drag the form
                 {
@@ -481,7 +485,7 @@ namespace NoFences
 
             if (e.Data.GetDataPresent(DataFormats.FileDrop))
             {
-                e.Effect = e.AllowedEffect & DragDropEffects.Move;
+                e.Effect = ImportEffect(e.AllowedEffect);
             }
         }
 
@@ -493,7 +497,7 @@ namespace NoFences
         private void FenceWindow_DragDrop(object sender, DragEventArgs e)
         {
             e.Effect = DragDropEffects.None;
-            if (lockedToolStripMenuItem.Checked || (e.AllowedEffect & DragDropEffects.Move) == 0)
+            if (lockedToolStripMenuItem.Checked || (ImportEffect(e.AllowedEffect) == DragDropEffects.None && !IsLocalItemDrag(e.Data)))
                 return;
             if (IsLocalItemDrag(e.Data))
             {
@@ -503,6 +507,11 @@ namespace NoFences
             var dropped = e.Data.GetData(DataFormats.FileDrop) as string[];
             if (dropped == null)
                 return;
+            if (FenceManager.Instance.UsesOriginalPaths(fenceInfo))
+            {
+                DropOriginalItems(e, dropped);
+                return;
+            }
             var imports = new List<PendingDesktopImport>();
             var addedPaths = new List<string>();
             var duplicateImports = new List<DuplicateDesktopImport>();
@@ -653,6 +662,7 @@ namespace NoFences
 
         private void FenceWindow_MouseMove(object sender, MouseEventArgs e)
         {
+            if (ScrollbarMouseMove(e)) return;
             if (e.Button == MouseButtons.Left && !isDraggingItem && !string.IsNullOrEmpty(draggedItem))
             {
                 var dragSize = SystemInformation.DragSize;
@@ -681,7 +691,13 @@ namespace NoFences
                         Refresh();
                         var data = new DataObject();
                         data.SetData(DataFormats.FileDrop, true, new[] { itemPath });
-                        DoDragDrop(data, DragDropEffects.Move);
+                        originalDragWasDropped = originalDragWasCancelled = false;
+                        originalDragModifiers = Keys.None;
+                        var effect = DoDragDrop(data, FenceManager.Instance.UsesOriginalPaths(fenceInfo)
+                            ? DragDropEffects.Copy | DragDropEffects.Move | DragDropEffects.Link : DragDropEffects.Move);
+                        // Hit-test the real destination, not our top-level drag image.
+                        dragGhost?.Hide();
+                        if (ItemExists(itemPath)) CompleteOriginalDesktopDrop(itemPath, effect);
 
                         if (!ItemExists(itemPath))
                         {
@@ -726,6 +742,8 @@ namespace NoFences
             if (titleLayer != null && titleLayer.IsEditing)
                 CommitTitleEdit();
 
+            if (ScrollbarMouseDown(e)) return;
+
             draggedItem = hoveringItem;
             dragStartPoint = e.Location;
             dragGhostCursorOffset = new Point(
@@ -737,7 +755,7 @@ namespace NoFences
         {
             if (dragGhost != null)
                 dragGhost.FollowCursor(MousePosition);
-            e.UseDefaultCursors = true;
+            UpdateOriginalDragFeedback(e, MousePosition, ModifierKeys);
         }
 
         private void FenceWindow_MouseEnter(object sender, EventArgs e)
@@ -806,13 +824,10 @@ namespace NoFences
             var y = itemPadding;
             FenceEntry selectedEntry = null;
             var selectedEntryLocation = Point.Empty;
-            scrollHeight = 0;
+            var entries = UpdateScrollLayout();
             e.Graphics.Clip = new Region(new Rectangle(0, titleHeight, Width, Height - titleHeight));
-            foreach (var file in fenceInfo.Files)
+            foreach (var entry in entries)
             {
-                var entry = FenceEntry.FromPath(file);
-                if (entry == null)
-                    continue;
 
                 var entryLocation = new Point(x, y + titleHeight - scrollOffset);
                 var wasSelected = string.Equals(selectedItem, entry.Path, StringComparison.OrdinalIgnoreCase);
@@ -825,12 +840,8 @@ namespace NoFences
                     selectedEntryLocation = entryLocation;
                 }
 
-                var itemBottom = y + itemHeight;
-                if (itemBottom > scrollHeight)
-                    scrollHeight = itemBottom;
-
                 x += itemWidth + itemSpacing;
-                if (x + itemWidth > Width)
+                if (x + itemWidth > itemLayoutWidth)
                 {
                     x = itemPadding;
                     y += itemHeight + itemSpacing;
@@ -840,17 +851,7 @@ namespace NoFences
             if (selectedEntry != null)
                 RenderEntry(e.Graphics, selectedEntry, selectedEntryLocation.X, selectedEntryLocation.Y);
 
-            scrollHeight -= (ClientRectangle.Height - titleHeight);
-
-            // Scroll bars
-            if (scrollHeight > 0)
-            {
-                var contentHeight = Height - titleHeight;
-                var scrollbarHeight = contentHeight - scrollHeight;
-                e.Graphics.FillRectangle(new SolidBrush(Color.FromArgb(150, Color.Black)), new Rectangle(Width - 5, titleHeight + scrollOffset, 5, scrollbarHeight));
-
-                scrollOffset = Math.Min(scrollOffset, scrollHeight);
-            }
+            DrawScrollbar(e.Graphics);
 
 
 
@@ -868,7 +869,7 @@ namespace NoFences
         {
             var mousePos = PointToClient(MousePosition);
             var baseItemRect = new Rectangle(x, y, itemWidth, itemHeight);
-            var mouseOver = ClientRectangle.Contains(mousePos) && mousePos.Y >= titleHeight && baseItemRect.Contains(mousePos);
+            var mouseOver = !draggingScrollThumb && !IsScrollbarPoint(mousePos) && ClientRectangle.Contains(mousePos) && mousePos.Y >= titleHeight && baseItemRect.Contains(mousePos);
 
             if (mouseOver)
             {
@@ -906,7 +907,8 @@ namespace NoFences
                 var outlineRect = new Rectangle(x - 2, y - 2, itemWidth + 2, itemIconSize + visibleTextHeight + 7);
                 var outlineRectInner = outlineRect.Shrink(1);
 
-                if (showFullText)
+                var editing = string.Equals(editingItemPath, entry.Path, StringComparison.OrdinalIgnoreCase);
+                if (showFullText && !editing)
                 {
                     using (var borderPen = new Pen(Color.FromArgb(120, SystemColors.ActiveBorder)))
                     using (var selectionBrush = new SolidBrush(Color.FromArgb(
@@ -917,7 +919,7 @@ namespace NoFences
                         g.FillRectangle(selectionBrush, outlineRect);
                     }
                 }
-                else if (mouseOver)
+                else if (mouseOver && !editing)
                 {
                     using (var borderPen = new Pen(Color.FromArgb(120, SystemColors.ActiveBorder)))
                     using (var hoverBrush = new SolidBrush(Color.FromArgb(80, SystemColors.ActiveCaption)))
@@ -963,7 +965,7 @@ namespace NoFences
                 }
 
                 x += itemWidth + itemSpacing;
-                if (x + itemWidth > Width)
+                if (x + itemWidth > itemLayoutWidth)
                 {
                     x = itemPadding;
                     y += itemHeight + itemSpacing;
@@ -1049,12 +1051,7 @@ namespace NoFences
             Refresh();
 
             var oldName = Path.GetFileName(itemPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
-            var measuredName = TextRenderer.MeasureText(
-                oldName,
-                iconFont,
-                Size.Empty,
-                TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
-            var editorWidth = Math.Max(32, measuredName.Width + 12);
+            var editorWidth = itemWidth;
             var editorBounds = new Rectangle(
                 hoveringItemOrigin.X + (itemWidth - editorWidth) / 2,
                 hoveringItemOrigin.Y + itemIconSize + 5,
@@ -1064,7 +1061,7 @@ namespace NoFences
                 oldName,
                 File.Exists(itemPath),
                 iconFont,
-                RectangleToScreen(editorBounds));
+                RectangleToScreen(editorBounds), true);
             itemEditor = editor;
             editor.CommitRequested += ItemEditor_CommitRequested;
             editor.CancelRequested += ItemEditor_CancelRequested;
@@ -1088,18 +1085,19 @@ namespace NoFences
 
             var itemPath = editingItemPath;
             var newName = itemEditor.EditedName;
-            CloseItemEditor();
+            CloseItemEditor(false);
             try
             {
-                var renamedPath = FenceManager.Instance.RenameItem(fenceInfo, itemPath, newName);
+                FenceManager.Instance.RenameItem(fenceInfo, itemPath, newName);
                 selectedItem = null;
-                hoveringItem = renamedPath;
-                Refresh();
+                hoveringItem = null;
             }
             catch (Exception exception)
             {
+                Refresh();
                 MessageBox.Show(this, exception.Message, "无法重命名项目", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
+            finally { Refresh(); }
         }
 
         private void CancelItemRename()
@@ -1108,16 +1106,17 @@ namespace NoFences
                 CloseItemEditor();
         }
 
-        private void CloseItemEditor()
+        private void CloseItemEditor(bool refresh = true)
         {
             var editor = itemEditor;
             itemEditor = null;
+            hoveringItem = null;
             editingItemPath = null;
             editor.CommitRequested -= ItemEditor_CommitRequested;
             editor.CancelRequested -= ItemEditor_CancelRequested;
             editor.Close();
             editor.Dispose();
-            Refresh();
+            if (refresh) Refresh();
         }
 
         private void BeginTitleEdit()
@@ -1427,13 +1426,7 @@ namespace NoFences
             if (scrollHeight < 1)
                 return;
 
-            scrollOffset -= Math.Sign(e.Delta) * 10;
-            if (scrollOffset < 0)
-                scrollOffset = 0;
-            if (scrollOffset > scrollHeight)
-                scrollOffset = scrollHeight;
-
-            Refresh();
+            SetScrollOffset(scrollOffset - Math.Sign(e.Delta) * 10);
         }
 
         private void ThumbnailProvider_IconThumbnailLoaded(object sender, EventArgs e)

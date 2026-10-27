@@ -131,7 +131,7 @@ namespace NoFences
 
         private string HitTestContextItem(Point point)
         {
-            if (!ClientRectangle.Contains(point) || point.Y < titleHeight)
+            if (!ClientRectangle.Contains(point) || point.Y < titleHeight || IsScrollbarPoint(point))
                 return null;
             var x = itemPadding;
             var y = titleHeight + itemPadding - scrollOffset;
@@ -155,7 +155,7 @@ namespace NoFences
                     }
                 }
                 x += itemWidth + itemSpacing;
-                if (x + itemWidth > Width)
+                if (x + itemWidth > itemLayoutWidth)
                 {
                     x = itemPadding;
                     y += itemHeight + itemSpacing;

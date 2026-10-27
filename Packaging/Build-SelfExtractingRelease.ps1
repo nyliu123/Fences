@@ -7,6 +7,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+$SevenZipDirectory = [System.IO.Path]::GetFullPath($SevenZipDirectory)
 $sevenZip = Join-Path $SevenZipDirectory '7z.exe'
 $module = if ($SfxModulePath) { [System.IO.Path]::GetFullPath($SfxModulePath) } else {
     Join-Path $projectRoot 'Fences/obj/SfxModule/7z.sfx'
@@ -35,9 +36,9 @@ New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
 # Explicit files only: never enumerate or package user data, Logs, Data, or AppData.
 $binaries = @(
     'Fences.exe', 'Fences.exe.config', 'Fences.Recovery.exe', 'Fences.Recovery.exe.config',
-    'Fences.pdb', 'cs/Fences.resources.dll', 'zh-CN/Fences.resources.dll'
+    'Fences.Desktop.dll', 'Fences.pdb', 'cs/Fences.resources.dll', 'zh-CN/Fences.resources.dll'
 )
-$documents = @('README.md', 'LICENSE', 'DESIGN.md', 'Tests/README.md', 'Packaging/README.md')
+$documents = @('README.md', 'LICENSE', 'DESIGN.md', 'CHANGELOG.md', 'Tests/README.md', 'Packaging/README.md')
 foreach ($relative in $binaries + $documents) {
     $sourceRoot = if ($relative -in $binaries) { $releaseDirectory } else { $projectRoot }
     $source = Join-Path $sourceRoot $relative
@@ -97,3 +98,36 @@ $output = Join-Path $outputDirectory $fileName
 Move-Item -LiteralPath $temporaryOutput -Destination $output -Force
 Write-Output ('Self-extracting release: ' + $output)
 Write-Output ('Staged payload: ' + $staging)
+
+# Portable delivery has the same application payload, without the SFX-only components.
+Add-Type -AssemblyName System.IO.Compression
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$portableName = 'Fences-' + $version.ToString(3) + '-win-x64-portable.zip'
+$portableTemporary = Join-Path (Split-Path $staging) ([guid]::NewGuid().ToString('N') + '.zip')
+$archive = [System.IO.Compression.ZipFile]::Open($portableTemporary, [System.IO.Compression.ZipArchiveMode]::Create)
+try {
+    foreach ($relative in $binaries + $documents) {
+        [void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, (Join-Path $staging $relative),
+            $relative.Replace('\', '/'), [System.IO.Compression.CompressionLevel]::Optimal)
+    }
+}
+finally { $archive.Dispose() }
+$verified = [System.IO.Compression.ZipFile]::OpenRead($portableTemporary)
+try {
+    if ($verified.Entries.Count -ne ($binaries.Count + $documents.Count)) { throw 'Unexpected portable payload entry count.' }
+    foreach ($relative in $binaries + $documents) {
+        $entry = $verified.GetEntry($relative.Replace('\', '/'))
+        if (-not $entry) { throw "Portable payload is incomplete: $relative" }
+        $stream = $entry.Open()
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        try { $actual = [System.BitConverter]::ToString($sha.ComputeHash($stream)).Replace('-', '') }
+        finally { $sha.Dispose(); $stream.Dispose() }
+        if ($actual -ne (Get-FileHash -LiteralPath (Join-Path $staging $relative) -Algorithm SHA256).Hash) {
+            throw "Portable payload differs from the release: $relative"
+        }
+    }
+}
+finally { $verified.Dispose() }
+$portable = Join-Path $outputDirectory $portableName
+Move-Item -LiteralPath $portableTemporary -Destination $portable -Force
+Write-Output ('Verified portable release: ' + $portable)

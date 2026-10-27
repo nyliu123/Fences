@@ -76,6 +76,8 @@
       <SubType>Form</SubType>
     </Compile>
     <Compile Include="FencePreviewPanel.cs" />
+    <Compile Include="DesktopCaptionWindow.cs" />
+    <Compile Include="DesktopRenameController.cs" />
     <Compile Include="TrayApplicationContext.cs" />
     <Compile Include="EditDialog.cs">
       <SubType>Form</SubType>
@@ -96,6 +98,10 @@
     <Compile Include="Model\FenceDesktopRelease.cs" />
     <Compile Include="Model\DesktopAccessClient.cs" />
     <Compile Include="Model\FenceManager.cs" />
+    <Compile Include="Model\FenceManager.OriginalPaths.cs" />
+    <Compile Include="Model\DesktopViewSettings.cs" />
+    <Compile Include="FenceWindow.OriginalPaths.cs" />
+    <Compile Include="FenceWindow.Scrolling.cs" />
     <Compile Include="FenceWindow.cs">
       <SubType>Form</SubType>
     </Compile>
@@ -119,6 +125,9 @@
     <Compile Include="Util\AppDataPaths.cs" />
     <Compile Include="Util\AppDataMigration.cs" />
     <Compile Include="Util\DesktopFileAccess.cs" />
+    <Compile Include="Util\DesktopIntegration.cs" />
+    <Compile Include="Util\DesktopViewRecovery.cs" />
+    <Compile Include="Util\OriginalPathMonitor.cs" />
     <Compile Include="Util\FenceShutdown.cs" />
     <Compile Include="Util\ExecutableLauncher.cs" />
     <Compile Include="Util\ShellShortcut.cs" />
@@ -129,6 +138,7 @@
     <Compile Include="Util\ThumbnailProvider.cs" />
     <Compile Include="Win32\BlurUtil.cs" />
     <Compile Include="Win32\DesktopUtil.cs" />
+    <Compile Include="Win32\DesktopViewNative.cs" />
     <Compile Include="Win32\DesktopWindowHost.cs" />
     <Compile Include="Win32\DropShadow.cs" />
     <Compile Include="Win32\GlobalMouseClickMonitor.cs" />
@@ -192,6 +202,9 @@
     <Content Include="Assets\NoFences.png" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+  <Target Name="BuildNativeDesktop" BeforeTargets="Build" Condition="'$(DesignTimeBuild)' != 'true'">
+    <Exec Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\..\Packaging\Build-NativeDesktop.ps1&quot; -OutputDirectory &quot;$(MSBuildProjectDirectory)\$(OutputPath).&quot; -Configuration &quot;$(Configuration)&quot;" />
+  </Target>
   <Target Name="CopyExitRecoveryExecutable" AfterTargets="Build">
     <Copy SourceFiles="$(TargetPath)" DestinationFiles="$(TargetDir)Fences.Recovery.exe" />
     <Copy SourceFiles="$(TargetPath).config" DestinationFiles="$(TargetDir)Fences.Recovery.exe.config" Condition="Exists('$(TargetPath).config')" />

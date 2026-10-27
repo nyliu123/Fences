@@ -47,6 +47,7 @@ namespace NoFences.Util
                 try
                 {
                     AppDataMigration.Migrate(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData));
+                    DesktopViewRecovery.Recover();
                 }
                 finally
                 {
@@ -75,6 +76,7 @@ namespace NoFences.Util
         {
             try
             {
+                DesktopViewRecovery.Recover();
                 var errors = FenceManager.Instance.ReleaseStoredFences();
                 if (errors.Count > 0)
                     MessageBox.Show(string.Join(Environment.NewLine, errors), "无法释放部分桌面项目",

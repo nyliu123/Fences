@@ -7,7 +7,7 @@ using NoFences.Win32;
 
 namespace NoFences.Model
 {
-    public class FenceManager
+    public partial class FenceManager
     {
         public static FenceManager Instance { get; } = new FenceManager();
 
@@ -61,6 +61,8 @@ namespace NoFences.Model
         {
             var errors = new List<string>();
             var loadedFences = new List<FenceInfo>();
+            var desktopChanged = !KeepOriginalPaths;
+            var originalWriteTimes = new Dictionary<Guid, DateTime>();
             foreach (var directoryPath in Directory.EnumerateDirectories(basePath))
             {
                 var metaFile = Path.Combine(directoryPath, MetaFileName);
@@ -75,9 +77,25 @@ namespace NoFences.Model
                         fence = serializer.Deserialize(reader) as FenceInfo;
                     if (fence == null)
                         continue;
+                    originalWriteTimes[fence.Id] = File.GetLastWriteTimeUtc(metaFile);
 
                     var changed = LocalizeLegacyName(fence);
                     changed |= ResolvePendingDesktopReleases(fence);
+                    if (KeepOriginalPaths)
+                    {
+                        changed |= RecoverUnlistedOwnedItems(fence);
+                        if (fence.Files.Exists(path => IsOwnedByFence(fence, path)))
+                        {
+                            desktopChanged = true;
+                            errors.AddRange(ReleaseAllItems(fence, true, false));
+                        }
+                        if (!fence.KeepOriginalPaths || fence.DesktopAccessClients.Count != 0)
+                        {
+                            fence.KeepOriginalPaths = true;
+                            fence.DesktopAccessClients.Clear();
+                            changed = true;
+                        }
+                    }
                     changed |= fence.DesktopAccessClients.RemoveAll(client => !client.IsRunning()) > 0;
                     if (fence.DesktopAccessClients.Count == 0)
                         changed |= MoveExternalItemsIntoFence(fence, errors);
@@ -92,7 +110,7 @@ namespace NoFences.Model
                     if (changed)
                         WriteFence(fence);
                     // Do not display a fence if an item could not be moved off the desktop.
-                    if (fence.DesktopAccessClients.Count == 0 &&
+                    if (!fence.KeepOriginalPaths && fence.DesktopAccessClients.Count == 0 &&
                         fence.Files.Exists(path => ItemExists(path) && !IsOwnedByFence(fence, path)))
                         continue;
                     loadedFences.Add(fence);
@@ -105,7 +123,11 @@ namespace NoFences.Model
 
             // Move every fence's items first, then flush Explorer's desktop notifications
             // before constructing any windows (including their icon/title layers).
-            DesktopUtil.FlushDesktopChanges(desktopPath);
+            if (desktopChanged) DesktopUtil.FlushDesktopChanges(desktopPath);
+            if (KeepOriginalPaths) ResolveDuplicateOriginalMemberships(loadedFences, originalWriteTimes);
+            loadedInfos.Clear();
+            foreach (var fence in loadedFences) loadedInfos[fence.Id] = fence;
+            BeforeShowingFences?.Invoke(loadedFences);
             foreach (var fence in loadedFences)
             {
                 try
@@ -131,6 +153,7 @@ namespace NoFences.Model
                 Height = 300,
                 Width = 300
             };
+            fenceInfo.KeepOriginalPaths = KeepOriginalPaths;
             UpdateFence(fenceInfo);
             new FenceWindow(fenceInfo).Show();
         }
@@ -141,12 +164,23 @@ namespace NoFences.Model
             if (errors.Count > 0)
                 throw new IOException(string.Join(Environment.NewLine, errors));
             Directory.Delete(GetFolderPath(info), true);
+            loadedInfos.Remove(info.Id);
+            MembershipChanged?.Invoke();
         }
 
         public string ImportItem(FenceInfo info, string itemPath)
         {
             if (!ItemExists(itemPath))
                 throw new FileNotFoundException("要添加的项目已不存在。", itemPath);
+            if (UsesOriginalPaths(info))
+            {
+                var original = Path.GetFullPath(itemPath);
+                var storage = Path.GetFullPath(basePath).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+                if (original.StartsWith(storage, StringComparison.OrdinalIgnoreCase))
+                    throw new IOException("不能将 Fences 的配置或存储目录中的项目直接加入分区。");
+                info.KeepOriginalPaths = true;
+                return original;
+            }
             if (IsOwnedByFence(info, itemPath))
                 return itemPath;
 
@@ -160,6 +194,8 @@ namespace NoFences.Model
 
         public string FindEquivalentImportedItem(FenceInfo info, string originalPath, string importedPath)
         {
+            if (UsesOriginalPaths(info))
+                return null;
             if (!File.Exists(importedPath))
                 return null;
 
@@ -177,11 +213,13 @@ namespace NoFences.Model
 
         public void CompleteDuplicateImport(string importedPath)
         {
+            if (KeepOriginalPaths) return;
             DeleteItem(importedPath);
         }
 
         public void CancelImport(string originalPath, string importedPath)
         {
+            if (PathsEqual(originalPath, importedPath)) return;
             if (!ItemExists(importedPath))
                 return;
             if (ItemExists(originalPath))
@@ -293,6 +331,11 @@ namespace NoFences.Model
 
         public void TransferItem(FenceInfo source, FenceInfo destination, string itemPath)
         {
+            if (UsesOriginalPaths(source) || UsesOriginalPaths(destination))
+            {
+                TransferOriginalItem(source, destination, itemPath);
+                return;
+            }
             if (source.Id == destination.Id)
                 return;
             var sourceIndex = source.Files.FindIndex(path => PathsEqual(path, itemPath));
@@ -337,6 +380,7 @@ namespace NoFences.Model
 
         internal IList<string> BeginDesktopAccess(FenceInfo info, DesktopAccessClient client)
         {
+            if (UsesOriginalPaths(info)) return new List<string>();
             if (!info.DesktopAccessClients.Exists(existing => existing.Matches(client)))
                 info.DesktopAccessClients.Add(client);
             // Persist the client before releasing anything. Existing release journaling
@@ -347,8 +391,15 @@ namespace NoFences.Model
 
         internal IList<string> EndDesktopAccess(FenceInfo info, DesktopAccessClient client)
         {
+            info.DesktopAccessClients.RemoveAll(existing => existing.Matches(client));
+            return RefreshDesktopAccess(info);
+        }
+
+        internal IList<string> RefreshDesktopAccess(FenceInfo info)
+        {
+            if (UsesOriginalPaths(info)) return new List<string>();
             var errors = new List<string>();
-            info.DesktopAccessClients.RemoveAll(existing => existing.Matches(client) || !existing.IsRunning());
+            info.DesktopAccessClients.RemoveAll(existing => !existing.IsRunning());
             if (info.DesktopAccessClients.Count == 0)
                 MoveExternalItemsIntoFence(info, errors);
             WriteFence(info);
@@ -372,6 +423,7 @@ namespace NoFences.Model
 
         private bool MoveExternalItemsIntoFence(FenceInfo info, IList<string> errors)
         {
+            if (info.KeepOriginalPaths) return false;
             var changed = false;
             for (var index = 0; index < info.Files.Count; index++)
             {
@@ -507,6 +559,8 @@ namespace NoFences.Model
                     File.Replace(tempFile, metaFile, null);
                 else
                     File.Move(tempFile, metaFile);
+                loadedInfos[fenceInfo.Id] = fenceInfo;
+                MembershipChanged?.Invoke();
             }
             finally
             {

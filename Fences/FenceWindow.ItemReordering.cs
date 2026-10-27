@@ -39,13 +39,13 @@ namespace NoFences
                 UpdateItemInsertionTarget(e);
             else
                 e.Effect = !lockedToolStripMenuItem.Checked && e.Data.GetDataPresent(DataFormats.FileDrop)
-                    ? e.AllowedEffect & DragDropEffects.Move : DragDropEffects.None;
+                    ? ImportEffect(e.AllowedEffect) : DragDropEffects.None;
         }
 
         private void UpdateItemInsertionTarget(DragEventArgs e, bool allowScroll = true)
         {
             var cursor = PointToClient(new Point(e.X, e.Y));
-            if (lockedToolStripMenuItem.Checked || cursor.Y < titleHeight || !ClientRectangle.Contains(cursor))
+            if (lockedToolStripMenuItem.Checked || cursor.Y < titleHeight || !ClientRectangle.Contains(cursor) || IsScrollbarPoint(cursor))
             {
                 e.Effect = DragDropEffects.None;
                 ClearItemInsertionTarget();
@@ -59,7 +59,7 @@ namespace NoFences
                 lastDragScrollUtc = DateTime.UtcNow;
             }
             var visiblePaths = fenceInfo.Files.FindAll(ItemExists);
-            var target = ItemInsertionLayout.Locate(cursor, visiblePaths.Count, Width, titleHeight,
+            var target = ItemInsertionLayout.Locate(cursor, visiblePaths.Count, itemLayoutWidth, titleHeight,
                 scrollOffset, itemPadding, itemWidth, itemHeight, itemSpacing);
             var visibleIndex = target.Index;
             target.Index = visibleIndex == visiblePaths.Count ? fenceInfo.Files.Count :

@@ -42,6 +42,8 @@ namespace NoFences.Model
 
         public List<string> Files { get; set; } = new List<string>();
 
+        public bool KeepOriginalPaths { get; set; }
+
         public List<FenceDesktopRelease> PendingDesktopReleases { get; set; } = new List<FenceDesktopRelease>();
 
         public List<DesktopAccessClient> DesktopAccessClients { get; set; } = new List<DesktopAccessClient>();

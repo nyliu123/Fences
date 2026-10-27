@@ -1,5 +1,6 @@
 ﻿using NoFences.Model;
 using System;
+using System.Linq;
 using System.Threading;
 using System.Windows.Forms;
 using NoFences.Win32;
@@ -51,6 +52,14 @@ namespace NoFences
                     {
                         using (var trayContext = new TrayApplicationContext())
                         {
+                            try { trayContext.StartDesktopIntegration(); }
+                            catch (Exception exception)
+                            {
+                                ErrorReporter.Write(exception);
+                                MessageBox.Show("无法启动原生桌面视图，Windows 桌面保持可用。\n\n" + exception.Message,
+                                    AppName, MessageBoxButtons.OK, MessageBoxIcon.Error);
+                                return;
+                            }
                             var loadErrors = FenceManager.Instance.LoadFences();
                             if (loadErrors.Count > 0)
                             {
@@ -60,13 +69,17 @@ namespace NoFences
                                     MessageBoxButtons.OK,
                                     MessageBoxIcon.Warning);
                             }
-                            if (Application.OpenForms.Count == 0)
+                            if (!Application.OpenForms.OfType<FenceWindow>().Any())
                                 FenceManager.Instance.CreateFence("常用");
-
-                            trayContext.StartDesktopFileAccess();
 
                             Application.Run(trayContext);
                         }
+                    }
+                    catch (Exception exception)
+                    {
+                        ErrorReporter.Write(exception);
+                        MessageBox.Show("Fences 未能完成启动，已停止桌面接管。\n\n" + exception.Message,
+                            AppName, MessageBoxButtons.OK, MessageBoxIcon.Error);
                     }
                     finally
                     {

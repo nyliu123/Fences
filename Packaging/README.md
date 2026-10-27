@@ -4,6 +4,8 @@
 
 ## 构建
 
+1.7.0 的 portable 与自解压包都必须包含 `Fences.Desktop.dll`。项目构建会通过 `Build-NativeDesktop.ps1` 编译原生 x64 模块，使用静态 C++ 运行库；用户运行时不需要另装 C++ Build Tools。
+
 准备官方 7-Zip x64 工具目录，其中应包含 `7z.exe`、`7z.dll` 和 `License.txt`，以及同版本的完整 7-Zip 源码。可以使用已安装的 7-Zip，也可以从[官方页面](https://www.7-zip.org/download.html)下载并解压发行文件与源码。构建需要 Visual Studio C++ Build Tools 和 Windows SDK；用户运行最终自解压程序不需要安装 7-Zip 或 C++ 工具。
 
 在 Visual Studio 开发者 PowerShell 中运行：
@@ -16,6 +18,9 @@
 第一步复制上游源码到 `Fences/obj/SfxModule` 下的独立工作目录，仅修改默认路径及自解压模块的权限清单，再编译原生 x64 模块。可用 `-DefaultDirectory` 调整打包时的默认路径；默认值为 `C:\Program Files\Fences`。原有的目标目录输入框、浏览按钮和 `-o` 显式路径参数保持可用。
 
 第二步可通过 `-MsBuildPath` 指定 `MSBuild.exe`，通过 `-SfxModulePath` 指定定制模块；默认使用第一步生成的 `Fences/obj/SfxModule/7z.sfx`。脚本先检查模块权限清单，再编译 Release，并从明确的文件清单创建自解压包，输出到 `artifacts`。
+
+同一次构建也会生成 `Fences-<版本>-win-x64-portable.zip`，逐项验证 ZIP 内文件与 Release 源文件的 SHA-256 一致。当前交付名称为 `Fences-1.7.15-win-x64-portable.zip` 和 `Fences-1.7.15-win-x64-sfx.exe`。
+
 
 模块构建脚本的 `-ExecutionLevel asInvoker` 仅生成独立的 `7z-test.sfx` 测试副本，用于在不自动操作 UAC 的情况下检查默认目录和解压逻辑。发行打包会拒绝该测试副本；实际发行模块使用 `requireAdministrator`，Fences 主程序的 `asInvoker` 清单不变。修改后的 7-Zip 模块附带上游许可、源码链接和重建脚本。
 

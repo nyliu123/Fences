@@ -35,7 +35,8 @@ internal static class SfxDefaultDirectoryTests
     private static void Main()
     {
         var root = Path.GetFullPath(".");
-        var release = Path.Combine(root, "artifacts", "Fences-1.6.0-win-x64-sfx.exe");
+        var version = FileVersionInfo.GetVersionInfo(Path.Combine(root, "Fences", "bin", "Release", "Fences.exe")).FileVersion;
+        var release = Path.Combine(root, "artifacts", "Fences-" + new Version(version).ToString(3) + "-win-x64-sfx.exe");
         var testCopy = Path.Combine(root, "Fences", "obj", "SfxModule", "test-package.exe");
         Check(Level(release) == "requireAdministrator", "release SFX embeds the administrator manifest");
         Check(Level(Path.Combine(root, "Fences", "bin", "Release", "Fences.exe")) == "asInvoker",
@@ -57,7 +58,7 @@ internal static class SfxDefaultDirectoryTests
                 if (!process.WaitForExit(10000)) { process.Kill(); process.WaitForExit(); throw new Exception("SFX did not exit"); }
                 Check(process.ExitCode == 0, "native extraction to an explicit Unicode/space path succeeds");
             }
-            foreach (var name in new[] { "Fences.exe", "Fences.Recovery.exe", "Fences.exe.config", "Fences.Recovery.exe.config",
+            foreach (var name in new[] { "Fences.exe", "Fences.Recovery.exe", "Fences.Desktop.dll", "Fences.exe.config", "Fences.Recovery.exe.config",
                 @"cs\Fences.resources.dll", @"zh-CN\Fences.resources.dll" })
                 Check(File.ReadAllBytes(Path.Combine(destination, name)).SequenceEqual(
                     File.ReadAllBytes(Path.Combine(root, "Fences", "bin", "Release", name))), "extracted release matches: " + name);

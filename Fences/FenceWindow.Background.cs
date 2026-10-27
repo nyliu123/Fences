@@ -77,6 +77,7 @@ namespace NoFences
                     }
 
                     DrawItemBackgrounds(graphics);
+                    DrawScrollbar(graphics);
                     using (var border = new Pen(acrylicBorder))
                     using (var outline = WindowGeometry.CreateOutline(
                         new Rectangle(0, 0, ClientSize.Width - 1, ClientSize.Height - 1), appearance.CornerRadius))
@@ -130,7 +131,7 @@ namespace NoFences
                         }
                     }
                     x += itemWidth + itemSpacing;
-                    if (x + itemWidth > Width)
+                    if (x + itemWidth > itemLayoutWidth)
                     {
                         x = itemPadding;
                         y += itemHeight + itemSpacing;

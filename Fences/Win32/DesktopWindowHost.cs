@@ -28,6 +28,9 @@ namespace NoFences.Win32
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         private static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string className, string title);
 
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        private static extern int GetClassName(IntPtr window, System.Text.StringBuilder name, int capacity);
+
         private delegate bool WindowCallback(IntPtr window, IntPtr parameter);
 
         private static IntPtr Host
@@ -36,8 +39,13 @@ namespace NoFences.Win32
             {
                 if (IsWindow(desktopHost))
                     return desktopHost;
+                desktopHost = IntPtr.Zero;
                 EnumWindows((window, parameter) =>
                 {
+                    var className = new System.Text.StringBuilder(64);
+                    GetClassName(window, className, className.Capacity);
+                    if (className.ToString() != "Progman" && className.ToString() != "WorkerW")
+                        return true;
                     var desktopView = FindWindowEx(window, IntPtr.Zero, "SHELLDLL_DefView", null);
                     if (desktopView == IntPtr.Zero)
                         return true;
@@ -53,6 +61,7 @@ namespace NoFences.Win32
         }
 
         internal static IntPtr Handle => Host;
+        internal static void Reset() { desktopHost = IntPtr.Zero; }
 
         public static void Attach(Form window, IntPtr parent)
         {

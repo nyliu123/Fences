@@ -19,6 +19,7 @@ namespace NoFences
         private readonly ToolStripMenuItem personalizationMenuItem;
         private readonly GlobalMouseClickMonitor mouseClickMonitor;
         private DesktopFileAccess desktopFileAccess;
+        private DesktopIntegration desktopIntegration;
 
         public TrayApplicationContext()
         {
@@ -38,6 +39,7 @@ namespace NoFences
                 showFileExtensionsMenuItem,
                 personalizationMenuItem,
                 new ToolStripSeparator(),
+                new ToolStripMenuItem("刷新", null, RefreshFences),
                 new ToolStripMenuItem("新建桌面分区", null, CreateFence),
                 new ToolStripSeparator(),
                 new ToolStripMenuItem("退出 " + Program.AppName, null, ExitApplication)
@@ -63,6 +65,7 @@ namespace NoFences
             if (disposing)
             {
                 desktopFileAccess?.Dispose();
+                desktopIntegration?.Dispose();
                 mouseClickMonitor.Clicked -= MouseClickMonitor_Clicked;
                 mouseClickMonitor.Moved -= MouseClickMonitor_Moved;
                 mouseClickMonitor.Dispose();
@@ -78,6 +81,13 @@ namespace NoFences
             desktopFileAccess = new DesktopFileAccess(GetFences, message =>
                 notifyIcon.ShowBalloonTip(8000, "桌面项目恢复", message, ToolTipIcon.Warning));
             desktopFileAccess.Start();
+        }
+
+        internal void StartDesktopIntegration()
+        {
+            desktopIntegration = new DesktopIntegration(FenceManager.Instance, GetFences, message =>
+                notifyIcon.ShowBalloonTip(8000, "桌面视图", message, ToolTipIcon.Warning));
+            desktopIntegration.Start();
         }
 
         private ToolStripMenuItem CreateBatchMenuItem(string text, EventHandler handler)
@@ -154,6 +164,23 @@ namespace NoFences
             }
         }
 
+        private void RefreshFences(object sender, EventArgs e)
+        {
+            if (desktopIntegration != null)
+            {
+                try { desktopIntegration.Refresh(); }
+                catch (Exception exception)
+                {
+                    ErrorReporter.Write(exception);
+                    notifyIcon.ShowBalloonTip(8000, "无法刷新桌面", exception.Message, ToolTipIcon.Warning);
+                }
+                return;
+            }
+            if (desktopFileAccess == null)
+                StartDesktopFileAccess();
+            desktopFileAccess.Refresh();
+        }
+
         private void CreateFence(object sender, EventArgs e)
         {
             FenceManager.Instance.CreateFence("新建分区");
@@ -164,6 +191,8 @@ namespace NoFences
             desktopFileAccess?.Dispose();
             desktopFileAccess = null;
             FenceShutdown.CloseAllWindows();
+            desktopIntegration?.Dispose();
+            desktopIntegration = null;
             notifyIcon.Visible = false;
             Application.Exit();
         }

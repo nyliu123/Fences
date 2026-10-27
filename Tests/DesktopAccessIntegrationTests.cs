@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -74,6 +75,9 @@ internal static class DesktopAccessIntegrationTests
                 PumpUntil(() => dialogClosed.WaitOne(0), "file-dialog helper sees the restored file and closes");
                 Check(File.Exists(Path.Combine(desktop, "sample.txt")) && !child.HasExited,
                     "dialog closure keeps the real file available while the consuming app lives");
+                RefreshFromTray(access, false);
+                Check(File.Exists(Path.Combine(desktop, "sample.txt")),
+                    "tray refresh preserves paths used by a live consuming app");
 
                 // Simulate restarting NoFences while the consumer is still using the path.
                 access.Dispose();
@@ -96,6 +100,26 @@ internal static class DesktopAccessIntegrationTests
                 Check(reloadedInfo.DesktopAccessClients.Count == 0 && File.ReadAllText(reloadedInfo.Files[0]) == "integration data",
                     "restored membership and data survive the full lifecycle");
                 Check(errors.Count == 0, "no file-access errors were reported");
+
+                var expiredClient = new DesktopAccessClient { ProcessId = child.Id, StartTimeUtcTicks = 1 };
+                var begin = typeof(FenceManager).GetMethod("BeginDesktopAccess", Instance);
+                begin.Invoke(manager, new object[] { reloadedInfo, expiredClient });
+                var restored = Path.Combine(desktop, "sample.txt");
+                using (var locked = new FileStream(restored, FileMode.Open, FileAccess.Read, FileShare.Read))
+                {
+                    RefreshFromTray(access, true);
+                    Check(File.Exists(restored) && errors.Count == 1,
+                        "refresh reports a locked-file failure and preserves the desktop file");
+                    Check(reloadedInfo.DesktopAccessClients.Count == 0,
+                        "refresh removes an expired client without a process-exit notification");
+                }
+                errors.Clear();
+                RefreshFromTray(access, false);
+                Check(!File.Exists(restored) && File.ReadAllText(reloadedInfo.Files[0]) == "integration data",
+                    "tray refresh retries reclaim after the file lock is released");
+                RefreshFromTray(access, false);
+                Check(errors.Count == 0 && File.Exists(reloadedInfo.Files[0]),
+                    "repeated tray refresh is safe after successful reclaim");
             }
             finally
             {
@@ -109,6 +133,36 @@ internal static class DesktopAccessIntegrationTests
                 }
                 Directory.Delete(root, true);
             }
+        }
+    }
+
+    private static void RefreshFromTray(IDisposable access, bool render)
+    {
+        var type = typeof(FenceWindow).Assembly.GetType("NoFences.TrayApplicationContext");
+        using (var tray = (ApplicationContext)Activator.CreateInstance(type))
+        {
+            var service = type.GetField("desktopFileAccess", Instance);
+            service.SetValue(tray, access);
+            try
+            {
+                var menu = (ContextMenuStrip)type.GetField("contextMenu", Instance).GetValue(tray);
+                var refresh = menu.Items.OfType<ToolStripMenuItem>().Single(item => item.Text == "刷新");
+                if (render)
+                {
+                    menu.Show(new Point(40, 40));
+                    Application.DoEvents();
+                    var directory = Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location), "VisualChecks");
+                    Directory.CreateDirectory(directory);
+                    using (var bitmap = new Bitmap(menu.Width, menu.Height))
+                    {
+                        menu.DrawToBitmap(bitmap, menu.ClientRectangle);
+                        bitmap.Save(Path.Combine(directory, "tray-refresh-menu.png"));
+                    }
+                    menu.Close();
+                }
+                refresh.PerformClick();
+            }
+            finally { service.SetValue(tray, null); }
         }
     }
 
