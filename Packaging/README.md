@@ -19,7 +19,7 @@
 
 第二步可通过 `-MsBuildPath` 指定 `MSBuild.exe`，通过 `-SfxModulePath` 指定定制模块；默认使用第一步生成的 `Fences/obj/SfxModule/7z.sfx`。脚本先检查模块权限清单，再编译 Release，并从明确的文件清单创建自解压包，输出到 `artifacts`。
 
-同一次构建也会生成 `Fences-<版本>-win-x64-portable.zip`，逐项验证 ZIP 内文件与 Release 源文件的 SHA-256 一致。当前交付名称为 `Fences-1.7.15-win-x64-portable.zip` 和 `Fences-1.7.15-win-x64-sfx.exe`。
+同一次构建也会生成 `Fences-<版本>-win-x64-portable.zip`，逐项验证 ZIP 内文件与 Release 源文件的 SHA-256 一致。当前交付名称为 `Fences-1.7.16-win-x64-portable.zip` 和 `Fences-1.7.16-win-x64-sfx.exe`。
 
 
 模块构建脚本的 `-ExecutionLevel asInvoker` 仅生成独立的 `7z-test.sfx` 测试副本，用于在不自动操作 UAC 的情况下检查默认目录和解压逻辑。发行打包会拒绝该测试副本；实际发行模块使用 `requireAdministrator`，Fences 主程序的 `asInvoker` 清单不变。修改后的 7-Zip 模块附带上游许可、源码链接和重建脚本。

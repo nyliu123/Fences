@@ -21,7 +21,10 @@ internal static class OriginalPathsTests
     private static readonly WndProc procedure = WindowProcedure;
     private static int assertions;
     private static bool renameOnly;
+    private static bool recycleOnly;
     private static bool offscreen;
+    [DllImport("RecycleRestoreFixture.dll", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Unicode)]
+    private static extern int RecycleRestoreFixture(IntPtr list, string path);
     private static IntPtr watchedRenameList;
     private static Bounds nativeRenameBounds;
     private static long nativeRenameStyle;
@@ -145,6 +148,7 @@ internal static class OriginalPathsTests
     private static void Run(string[] args)
     {
         renameOnly = args.Contains("--rename-only");
+        recycleOnly = args.Contains("--recycle-only");
         offscreen = args.Contains("--offscreen");
         if (offscreen) Console.WriteLine("LIMITATION: native render inspection only; live screen acceptance is unavailable in this session.");
         Application.EnableVisualStyles();
@@ -201,6 +205,12 @@ internal static class OriginalPathsTests
                 SendMessage(FencesViewWindow(native), 0x8000 + 178, new IntPtr(6), IntPtr.Zero).ToInt32() == 0,
                 "startup applies migrated membership before one navigation without an extra Shell refresh");
             PumpUntil(() => FencesVisibleCount(native) == 2, "native view excludes the migrated member and shows ordinary desktop items");
+            if (recycleOnly)
+            {
+                CheckRecycleRestore(native, desktop, integration);
+                Console.WriteLine("PASS: " + assertions + " real Recycle Bin restoration assertions");
+                return;
+            }
             CheckOriginalDragFeedback(fence, info, oldSource, native);
             CheckNativeMenu(native, "desktop-menu-170.png");
             Check(SendMessage(FencesViewWindow(native), 0x8000 + 178, new IntPtr(4), IntPtr.Zero) == IntPtr.Zero,
@@ -383,6 +393,60 @@ internal static class OriginalPathsTests
             Check(selected == DialogResult.OK && dialog.FileName == file, "a real native file picker selects the grouped file at its unchanged path");
         }
     }
+    private static void CheckRecycleRestore(IntPtr context, string desktop, object integration)
+    {
+        if (!File.Exists(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "RecycleRestoreFixture.dll")))
+            throw new FileNotFoundException("RecycleRestoreFixture.dll is required for --recycle-only.");
+        IntPtr list = IntPtr.Zero;
+        EnumChildWindows(FencesViewWindow(context), (window, data) =>
+        {
+            var name = new StringBuilder(128); GetClassName(window, name, name.Capacity);
+            if (name.ToString() == "SysListView32") list = window;
+            return true;
+        }, IntPtr.Zero);
+        var captions = integration.GetType().GetField("captions", Instance).GetValue(integration);
+        var initial = Preferences.Empty; Marshal.ThrowExceptionForHR(FencesGetPreferences(context, ref initial));
+        for (var attempt = 0; attempt < 4; ++attempt)
+        {
+            var expected = initial;
+            expected.Flags = attempt < 2 ? expected.Flags | 1u : expected.Flags & ~1u;
+            expected.SortDirection = attempt < 2 ? 1 : -1;
+            Marshal.ThrowExceptionForHR(FencesSetPreferences(context, ref expected)); PumpFor(300);
+            var path = Path.Combine(desktop, "recycle-restore-" + Guid.NewGuid().ToString("N") + (attempt % 2 == 0 ? ".tmp" : ""));
+            var folder = attempt % 2 != 0;
+            if (folder) { Directory.CreateDirectory(path); File.WriteAllText(Path.Combine(path, "contents.txt"), "owned restoration fixture", Encoding.UTF8); }
+            else File.WriteAllText(path, "owned restoration fixture", Encoding.UTF8);
+            try
+            {
+                PumpUntil(() => Names(context).Contains(path), "enumerate owned recycle-restoration fixture");
+                Call(captions, "InvalidateBackground");
+                var result = RecycleRestoreFixture(list, path);
+                Check(result >= 0, "real Recycle Bin data drops onto the native desktop: HRESULT 0x" + result.ToString("X8"));
+                PumpUntil(() =>
+                {
+                    Check(Native((IDisposable)integration) == context, "caption refresh preserves the desktop view during restoration");
+                    return (folder ? Directory.Exists(path) : File.Exists(path)) && Names(context).Contains(path);
+                }, "restored fixture reappears without a caption-state exception");
+                Check(File.ReadAllText(folder ? Path.Combine(path, "contents.txt") : path, Encoding.UTF8) == "owned restoration fixture",
+                    "recycle restoration preserves fixture contents");
+                var actual = Preferences.Empty;
+                Check(FencesGetPreferences(context, ref actual) == 0 && actual.SortFormat == expected.SortFormat &&
+                    actual.SortProperty == expected.SortProperty && actual.SortDirection == expected.SortDirection &&
+                    (actual.Flags & 1u) == (expected.Flags & 1u), "zero-column restore retains the configured sort and arrangement mode");
+                PumpFor(700); // Let Shell finish icon positioning and asynchronous image preparation.
+                Capture(GetParent(FencesViewWindow(context)), "desktop-recycle-restored-" + attempt + ".png");
+            }
+            finally
+            {
+                if (Directory.Exists(path)) Directory.Delete(path, true);
+                else if (File.Exists(path)) File.Delete(path);
+            }
+            PumpUntil(() => FencesVisibleCount(context) == 2, "restoration fixture cleanup leaves unrelated items intact");
+        }
+        Marshal.ThrowExceptionForHR(FencesSetPreferences(context, ref initial)); PumpFor(500);
+        SetFocus(list); QueueKey(list, 0x1b);
+    }
+
     private static void KeyboardCases(IntPtr context, IntPtr host, string desktop, string root, IMessageFilter filter)
     {
         var frame = FencesViewWindow(context);
@@ -475,6 +539,7 @@ internal static class OriginalPathsTests
     private static void CheckRenameEditor(IntPtr context, IntPtr list, string path)
     {
         int selectedIndex = -1;
+        PumpUntil(() => Names(context).Contains(path), "rename fixture is ready after Shell enumeration");
         var clear = new ItemState { StateMask = 3 }; SendMessage(list, 0x102b, new IntPtr(-1), ref clear);
         for (int index = 0; index < FencesVisibleCount(context); ++index)
         {
@@ -809,7 +874,8 @@ internal static class OriginalPathsTests
 
     private static void CheckItemMenuReturn(IntPtr context, IntPtr list, IntPtr host, string path)
     {
-        IDataObject previous = null; var saved = new DataObject(); bool useCopy = true;
+        IDataObject previous = null; var saved = new DataObject(); bool useCopy = !offscreen;
+        if (offscreen) Console.WriteLine("LIMITATION: offscreen Shell clipboard commands are not verified; the item-menu regression uses Rename.");
         try { previous = Clipboard.GetDataObject(); }
         catch (ExternalException) when (offscreen)
         {
@@ -849,7 +915,15 @@ internal static class OriginalPathsTests
                     }
                     catch (Exception failure) { error = failure; timer.Stop(); EndMenu(); }
                 };
-                var icon = new Bounds { Left = 1 }; SendMessage(list, 0x100e, IntPtr.Zero, ref icon);
+                var fixtureIndex = -1;
+                for (var index = 0; index < FencesVisibleCount(context); ++index)
+                {
+                    var name = new StringBuilder(32768);
+                    if (FencesItemPosition(context, index, name, (uint)name.Capacity, out var position) == 0 && name.ToString() == path)
+                    { fixtureIndex = index; break; }
+                }
+                Check(fixtureIndex >= 0, "find context-menu fixture after automatic sorting");
+                var icon = new Bounds { Left = 1 }; SendMessage(list, 0x100e, new IntPtr(fixtureIndex), ref icon);
                 var point = new Point((icon.Left + icon.Right) / 2, (icon.Top + icon.Bottom) / 2); ClientToScreen(list, ref point);
                 timer.Start(); PostMessage(list, 0x7b, list, new IntPtr((point.Y << 16) | (point.X & 0xffff)));
                 PumpFor(1800); timer.Stop();
@@ -1003,6 +1077,32 @@ internal static class OriginalPathsTests
             if (Directory.Exists(renamedFolder)) Directory.Delete(renamedFolder);
         }
         PumpUntil(() => FencesVisibleCount(context) == 2, "folder fixture cleanup leaves original items intact");
+        var shortcutPath = Path.Combine(directory, "app.release.2026.lnk");
+        object shell = null, shortcut = null;
+        try
+        {
+            shell = Activator.CreateInstance(Type.GetTypeFromProgID("WScript.Shell"));
+            shortcut = shell.GetType().InvokeMember("CreateShortcut", BindingFlags.InvokeMethod, null, shell, new object[] { shortcutPath });
+            shortcut.GetType().InvokeMember("TargetPath", BindingFlags.SetProperty, null, shortcut, new object[] { path });
+            shortcut.GetType().InvokeMember("Save", BindingFlags.InvokeMethod, null, shortcut, null);
+            PumpUntil(() => Names(context).Contains(shortcutPath), "enumerate dotted-name shortcut fixture");
+            SelectFixture(context, list, shortcutPath); QueueKey(list, 0x71);
+            PumpUntil(() => RenameEditHandle() != IntPtr.Zero, "open hidden-extension shortcut editor");
+            var edit = (TextBox)Control.FromHandle(RenameEditHandle());
+            var expected = edit.Text.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase) ? edit.Text.Length - 4 : edit.Text.Length;
+            Check(edit.SelectionStart == 0 && edit.SelectionLength == expected,
+                "shortcut rename preserves dots inside the filename when its extension is hidden");
+            CaptureEditor(edit.Handle, "desktop-rename-dotted-shortcut.png");
+            QueueKey(edit.Handle, 0x1b);
+        }
+        finally
+        {
+            if (RenameEditHandle() != IntPtr.Zero) QueueKey(RenameEditHandle(), 0x1b);
+            if (shortcut != null) Marshal.FinalReleaseComObject(shortcut);
+            if (shell != null) Marshal.FinalReleaseComObject(shell);
+            if (File.Exists(shortcutPath)) File.Delete(shortcutPath);
+        }
+        PumpUntil(() => FencesVisibleCount(context) == 2, "shortcut fixture cleanup leaves original items intact");
     }
     private static void CheckOriginalDragFeedback(FenceWindow fence, FenceInfo info, string path, IntPtr context)
     {
@@ -1040,7 +1140,9 @@ internal static class OriginalPathsTests
                 "copy/link modifiers retain the actual Shell feedback without releasing membership");
             Check(usesDefault(DragDropEffects.Copy, Keys.None, background) && usesDefault(DragDropEffects.Link, Keys.None, background),
                 "successful Shell copy/link feedback is never replaced");
-            Check(usesDefault(DragDropEffects.None, Keys.None, new Point(bounds.Left + 24, bounds.Top + 24)),
+            Check(FencesCaptionDecoration(context, 0, out var itemBounds, out var visualState) == 0, "read an actual desktop item hit rectangle");
+            var iconPoint = new Point(itemBounds.Left + 8, itemBounds.Top + 8); ClientToScreen(frame, ref iconPoint);
+            Check(usesDefault(DragDropEffects.None, Keys.None, iconPoint),
                 "dropping on another desktop icon retains prohibited feedback");
             var external = Path.Combine(Directory.GetParent(Path.GetDirectoryName(path)).FullName, "external-drag-" + Guid.NewGuid().ToString("N") + ".txt");
             File.WriteAllText(external, "owned drag fixture", Encoding.UTF8);
@@ -1161,6 +1263,7 @@ internal static class OriginalPathsTests
                     Check(labels.Any(label => label.Contains("显示设置")) && labels.Any(label => label.Contains("个性化")) &&
                         labels.Any(label => label.Contains("刷新")), "production menu retains desktop-specific and hosted-view commands");
                     var viewLabels = MenuLabels(GetSubMenu(menu, 0));
+                    Console.WriteLine("VIEW MENU: " + string.Join(" | ", viewLabels));
                     Check(viewLabels.Any(label => label.Contains("显示桌面图标")) && !viewLabels.Any(label => label.Contains("详细信息")),
                         "production View submenu uses actual desktop options including Show desktop icons");
                     Capture(popup, imageName);

@@ -1,12 +1,24 @@
 # Windows regression checks
 
+`OriginalPathsTests --recycle-only --offscreen` uses `RecycleRestoreFixture.cpp` for real Recycle Bin restoration coverage: four GUID-named file/folder fixtures are recycled and dropped through the registered native desktop target, with automatic and manual arrangement and different sort directions. Assertions check intact contents, retained sorting preferences, a live caption surface and complete rendered snapshots. Only the exact owned fixtures are restored; existing bin entries remain unchanged. Run this scenario in its own process, separately from `--rename-only`. Build the required helper beside the regression executable in the x64 developer environment:
+
+```powershell
+cl /nologo /LD /EHsc /std:c++17 /utf-8 Tests\RecycleRestoreFixture.cpp /Fo:Fences\obj\RegressionTests\RecycleRestoreFixture.obj /Fe:Fences\obj\RegressionTests\RecycleRestoreFixture.dll /link ole32.lib shell32.lib uuid.lib user32.lib propsys.lib
+```
+
+The restoration mode fails explicitly if this helper is missing; the ordinary suite does not run the scenario. The helper reproduces Shell clearing the view's sort-column count to zero; this state must preserve the configured primary sort rather than fail a one-column read.
+
+`DesktopTransferTests.cpp` verifies production OLE registration on the item and caption windows, registration release, real file moves into and out of an isolated desktop folder, the production drag source's Shell data object and original path, Recycle Bin move feedback, ascending/descending sorting of new arrivals, selection preservation, and manual-layout preservation. It never drops into the real Recycle Bin or changes the real desktop. Compile in the x64 Visual Studio developer environment, linking `Fences/obj/NativeDesktop/Release/Fences.Desktop.lib` plus `ole32 shell32 uuid user32 comctl32`, and place the final Release `Fences.Desktop.dll` beside the executable. Physical pointer dragging, right-drag menus, and cross-monitor behavior still require a live desktop check.
+
+The dotted-shortcut case in `OriginalPathsTests` verifies the actual native editor selection and saves `desktop-rename-dotted-shortcut.png`. In `--offscreen`, the item-menu return regression explicitly uses Rename; Shell clipboard command execution is not asserted in that mode.
+
 ## 1.7 original-path desktop integration
 
 Version 1.7.15's scrolling checks sample exact RGBA pixels with a colored translucent panel, verify the thumb is opaque in ordinary/dragging states, and change the panel color to check live updates. `scroll-custom-color.png` is an additional rendered composition.
 
 Version 1.7.14 adds `ScrollingInteractionTests.cs`: an owned 30-folder fixture checks actual layered-background thumb pixels, positive track geometry, drag clamping/capture release, paging, wheel behavior, hit exclusion and overflow removal; `scroll-top.png` / `scroll-bottom.png` are rendered compositions. Compile with the same manifest/x64/WinForms/Drawing references as the integration tests. `DesktopSelectionInteractionTests.cpp` uses the production interaction class and a native owned list to check late selection restoration, one-shot cleanup, invalidation by new input, marquee preservation and single-target deselection; link `ole32 shell32 uuid user32 comctl32`.
 
-The integration suite records each published rename-dismissal visual state for both unchanged and actually renamed files, verifies a newly selected item remains selected, and invokes a command through the real native item menu before returning to a blank desktop point. In `--offscreen`, unavailable clipboard access is reported explicitly and the menu test uses Rename instead of Copy. This verifies the shared return path, not every third-party menu verb or physical desktop interaction.
+The integration suite records each published rename-dismissal visual state for both unchanged and actually renamed files, verifies a newly selected item remains selected, and invokes a command through the real native item menu before returning to a blank desktop point. In `--offscreen`, the menu test uses Rename instead of Copy and explicitly reports that Shell clipboard commands are not verified. This verifies the shared return path, not every third-party menu verb or physical desktop interaction.
 
 Version 1.7.13 observes the original native EDIT's final `WM_WINDOWPOSCHANGED` geometry independently of the replacement editor. It compares actual width/initial height, checks wrapped long names and height restoration, retains stem-only selection and real Enter/Esc rename round trips, and verifies partition editors use their name-column width. The native control remains hidden until it is cancelled. In `--offscreen` mode only, live drag hit-testing is explicitly skipped if another process covers the owned target; skipped assertions are not counted or reported as verified. Default live mode remains strict. Rendered editor images are saved with the other `VisualChecks` snapshots.
 

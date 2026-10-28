@@ -8,6 +8,8 @@
 #include "RecycleBinIcon.h"
 #include "DesktopItemRenderer.h"
 #include "DesktopRenameTarget.h"
+#include "DesktopSortSelection.h"
+#include "DesktopDragDrop.h"
 #include <commctrl.h>
 #include <windowsx.h>
 #include <shlguid.h>
@@ -34,7 +36,9 @@ namespace
     constexpr UINT imagesMessage = WM_APP + 54;
     constexpr UINT renameBoundsMessage = WM_APP + 55;
     constexpr UINT clearSelectionMessage = WM_APP + 56;
+    constexpr UINT sortChangeMessage = WM_APP + 57;
     constexpr UINT_PTR iconsTimer = 0xF318;
+    constexpr UINT_PTR sortTimer = 0xF319;
     const wchar_t* windowClass = L"FencesDesktopView17";
     std::wstring Normalize(std::wstring value)
     {
@@ -54,6 +58,7 @@ namespace
         HWND shellWindow = nullptr;
         HWND listWindow = nullptr;
         HWND captionWindow = nullptr;
+        std::vector<HWND> dropWindows;
         HWND notificationWindow;
         UINT notificationMessage;
         bool wallpaper;
@@ -65,15 +70,20 @@ namespace
         HWND pendingNativeEditor = nullptr;
         DesktopRenameTarget* activeRename = nullptr;
         DesktopInteraction interaction;
+        DesktopSortSelection sortSelection;
+        SORTCOLUMN primarySort = { PKEY_ItemNameDisplay, SORT_ASCENDING };
+        int layoutItemCount = -1;
         bool suppressStationaryHot = false;
         POINT hoverResetPoint = {};
         ULONG shellChanges = 0;
         ULONG binChanges = 0;
+        std::vector<ULONG> sortChanges;
         RecycleBinIcon recycleBin;
         bool refreshAllIcons = false;
         UINT_PTR wallpaperLoads = 0;
         UINT_PTR wallpaperInvalidations = 0;
         bool painting = false;
+        bool dragging = false;
         UINT_PTR paintedFrames = 0;
         UINT_PTR presentationRevision = 0;
         RECT captionDirty = {};
@@ -301,7 +311,10 @@ namespace
             auto self = reinterpret_cast<DesktopView*>(data);
             try
             {
-                if (message == WM_NCDESTROY) RemoveWindowSubclass(child, ChildProcedure, id);
+                if (message == WM_NCDESTROY)
+                {
+                    self->UnregisterDrop(child); RemoveWindowSubclass(child, ChildProcedure, id);
+                }
                 if (child == self->pendingNativeEditor)
                 {
                     if (message == WM_WINDOWPOSCHANGING && lParam)
@@ -365,6 +378,7 @@ namespace
                 if (child == self->listWindow && message == WM_SETFONT) self->itemsRenderer.ResetFont();
                 if (message == WM_PAINT && child == self->listWindow && !wParam && !self->painting)
                 {
+                    if (self->layoutItemCount != ListView_GetItemCount(child)) self->QueueLayout();
                     if (self->imagesNeeded || self->preparedItemCount != ListView_GetItemCount(child)) self->QueueImages();
                     // Shell enumeration may complete after the first layout.
                     // Discover the virtual bin before painting that later frame.
@@ -448,6 +462,19 @@ namespace
                     const auto notification = reinterpret_cast<NMHDR*>(lParam);
                     if (notification->hwndFrom == self->listWindow)
                     {
+                        if (notification->code == LVN_BEGINDRAG || notification->code == LVN_BEGINRDRAG)
+                        {
+                            self->interaction.Close(self->listWindow);
+                            ComPtr<IDataObject> dragData; DWORD allowed = DROPEFFECT_NONE;
+                            if (GetDesktopDragData(self->view.Get(), &dragData, &allowed) == S_OK)
+                            {
+                                self->dragging = true;
+                                DWORD effect = DROPEFFECT_NONE;
+                                SHDoDragDrop(self->listWindow, dragData.Get(), nullptr, allowed, &effect);
+                                self->dragging = false; self->QueueLayout(); self->Notify(1);
+                            }
+                            return 0;
+                        }
                         if (notification->code == LVN_BEGINLABELEDITW)
                         {
                             if (self->pendingNativeEditor) return TRUE;
@@ -538,6 +565,22 @@ namespace
             }
             return result;
         }
+        HRESULT RegisterDrop(HWND targetWindow)
+        {
+            if (std::find(dropWindows.begin(), dropWindows.end(), targetWindow) != dropWindows.end()) return S_OK;
+            ComPtr<IDropTarget> target;
+            auto result = view.As(&target);
+            if (FAILED(result)) return result;
+            result = RegisterDragDrop(targetWindow, target.Get());
+            if (result == S_OK) dropWindows.push_back(targetWindow);
+            return result == DRAGDROP_E_ALREADYREGISTERED ? S_OK : result;
+        }
+        void UnregisterDrop(HWND targetWindow)
+        {
+            const auto found = std::find(dropWindows.begin(), dropWindows.end(), targetWindow);
+            if (found == dropWindows.end()) return;
+            RevokeDragDrop(targetWindow); dropWindows.erase(found);
+        }
         void AttachChildren()
         {
             if (!window || !view) return;
@@ -558,6 +601,10 @@ namespace
             }, reinterpret_cast<LPARAM>(this));
             if (listWindow)
             {
+                // Desktop-mode DefView supplies its native IDropTarget but
+                // leaves registration to its host. Keep native item/background
+                // routing, including virtual targets such as the Recycle Bin.
+                if (FAILED(RegisterDrop(listWindow))) { Notify(3); return; }
                 ListView_SetBkColor(listWindow, CLR_NONE);
                 ListView_SetTextBkColor(listWindow, CLR_NONE);
                 ListView_SetTextColor(listWindow, RGB(255, 255, 255));
@@ -580,6 +627,7 @@ namespace
             layoutPosted = false;
             AttachChildren();
             if (!listWindow) return;
+            layoutItemCount = ListView_GetItemCount(listWindow);
             if (desktop)
             {
                 recycleBin.Locate(view.Get());
@@ -611,7 +659,13 @@ namespace
             if (!areas.empty()) ListView_SetWorkAreas(listWindow, static_cast<int>(areas.size()), areas.data());
             DWORD flags = 0;
             view->GetCurrentFolderFlags(&flags);
+            // Recycle Bin drops can clear all Shell sort columns. Reinstate
+            // the configured rule for automatic layout, keeping manual layout.
+            int sortCount = 0;
+            if ((flags & FWF_AUTOARRANGE) && SUCCEEDED(view->GetSortColumnCount(&sortCount)) && sortCount == 0)
+                view->SetSortColumns(&primarySort, 1);
             if (flags & FWF_AUTOARRANGE) ListView_Arrange(listWindow, LVA_DEFAULT);
+            sortSelection.Restore(view.Get(), interaction.SelectionEpoch());
             RedrawWindow(window, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
             Notify(4);
             QueueImages();
@@ -662,12 +716,44 @@ namespace
                     self->browser->SetRect(nullptr, bounds); self->QueueLayout();
                 }
                 if (message == layoutMessage) { self->Layout(); return 0; }
-                if (message == labelsMessage) { self->labelsPosted = false; self->Notify(5); return 0; }
+                if (message == labelsMessage)
+                {
+                    self->labelsPosted = false;
+                    if (self->view) self->sortSelection.Restore(self->view.Get(), self->interaction.SelectionEpoch());
+                    self->Notify(5); return 0;
+                }
                 if (message == imagesMessage) { self->PrepareImages(); return 0; }
                 if (message == renameBoundsMessage) { self->FinishRenameBounds(); return 0; }
                 if (message == clearSelectionMessage)
                 {
                     if (self->interaction.FlushSelection(self->listWindow, self->view.Get(), wParam)) self->QueueLabels();
+                    return 0;
+                }
+                if (message == sortChangeMessage)
+                {
+                    PIDLIST_ABSOLUTE* items = nullptr; LONG event = 0;
+                    const auto locked = SHChangeNotification_Lock(reinterpret_cast<HANDLE>(wParam), static_cast<DWORD>(lParam), &items, &event);
+                    if (locked)
+                    {
+                        SHChangeNotification_Unlock(locked);
+                        SetTimer(window, sortTimer, 250, nullptr);
+                    }
+                    return 0;
+                }
+                if (message == WM_TIMER && wParam == sortTimer)
+                {
+                    // Batch filesystem arrivals and wait for active interactions.
+                    // Refresh re-sorts the Shell model; setting identical sort
+                    // columns or arranging ListView cells leaves arrivals appended.
+                    if (self->dragging || self->activeRename || (self->listWindow && (ListView_GetEditControl(self->listWindow) || GetCapture() ||
+                        ((GetAsyncKeyState(VK_LBUTTON) | GetAsyncKeyState(VK_RBUTTON)) & 0x8000)))) return 0;
+                    KillTimer(window, sortTimer);
+                    DWORD flags = 0;
+                    if (self->view && SUCCEEDED(self->view->GetCurrentFolderFlags(&flags)) && (flags & FWF_AUTOARRANGE))
+                    {
+                        self->sortSelection.Capture(self->view.Get(), self->interaction.SelectionEpoch());
+                        self->Refresh(false);
+                    }
                     return 0;
                 }
                 if (message == shellChangeMessage)
@@ -685,8 +771,8 @@ namespace
                 if (message == WM_TIMER && wParam == iconsTimer)
                 {
                     // Refreshing during a native edit/drag would destroy its editor.
-                    if (self->activeRename || (self->listWindow && (ListView_GetEditControl(self->listWindow) || GetCapture() ||
-                        (GetAsyncKeyState(VK_LBUTTON) & 0x8000)))) return 0;
+                    if (self->dragging || self->activeRename || (self->listWindow && (ListView_GetEditControl(self->listWindow) || GetCapture() ||
+                        ((GetAsyncKeyState(VK_LBUTTON) | GetAsyncKeyState(VK_RBUTTON)) & 0x8000)))) return 0;
                     KillTimer(window, iconsTimer);
                     if (self->desktop && !self->refreshAllIcons)
                     {
@@ -750,6 +836,21 @@ namespace
             shellChanges = SHChangeNotifyRegister(window, SHCNRF_ShellLevel | SHCNRF_NewDelivery,
                 SHCNE_UPDATEIMAGE | SHCNE_ASSOCCHANGED | SHCNE_DELETE | SHCNE_RMDIR, shellChangeMessage, 1, &entry);
             if (!shellChanges) return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
+            const std::vector<std::wstring> folders = desktop ? original.folders : std::vector<std::wstring>{ folder };
+            for (const auto& path : folders)
+            {
+                PIDLIST_ABSOLUTE location = nullptr;
+                auto watched = SHParseDisplayName(path.c_str(), nullptr, &location, 0, nullptr);
+                if (FAILED(watched)) return watched;
+                SHChangeNotifyEntry watchedEntry = { location, FALSE };
+                const auto registration = SHChangeNotifyRegister(window,
+                    SHCNRF_InterruptLevel | SHCNRF_ShellLevel | SHCNRF_NewDelivery,
+                    SHCNE_CREATE | SHCNE_MKDIR | SHCNE_DELETE | SHCNE_RMDIR,
+                    sortChangeMessage, 1, &watchedEntry);
+                CoTaskMemFree(location);
+                if (!registration) return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
+                sortChanges.push_back(registration);
+            }
             if (desktop)
             {
                 const auto binResult = recycleBin.Open();
@@ -793,11 +894,16 @@ namespace
                 RemoveWindowSubclass(pendingNativeEditor, ChildProcedure, reinterpret_cast<UINT_PTR>(this));
             pendingNativeEditor = nullptr; pendingRename.reset();
             interaction.Close(listWindow);
+            sortSelection.Clear();
+            while (!dropWindows.empty()) UnregisterDrop(dropWindows.back());
             if (shellChanges) SHChangeNotifyDeregister(shellChanges);
             if (binChanges) SHChangeNotifyDeregister(binChanges);
+            for (const auto registration : sortChanges) SHChangeNotifyDeregister(registration);
+            sortChanges.clear();
             shellChanges = 0;
             binChanges = 0;
             if (window) KillTimer(window, iconsTimer);
+            if (window) KillTimer(window, sortTimer);
             if (browser && cookie) browser->Unadvise(cookie);
             cookie = 0;
             for (const auto child : subclassed) if (IsWindow(child)) RemoveWindowSubclass(child, ChildProcedure, reinterpret_cast<UINT_PTR>(this));
@@ -822,6 +928,12 @@ namespace
         HRESULT SetCaptionWindow(HWND value)
         {
             if (value && (!window || !IsChild(window, value))) return E_INVALIDARG;
+            if (captionWindow != value) UnregisterDrop(captionWindow);
+            if (value)
+            {
+                const auto result = RegisterDrop(value);
+                if (FAILED(result)) return result;
+            }
             captionWindow = value; return S_OK;
         }
         HFONT CaptionMetrics(RECT* bounds, int* height)
@@ -1043,10 +1155,19 @@ namespace
             if (FAILED(result)) return result;
             result = view->GetCurrentFolderFlags(&prefs->flags);
             if (FAILED(result)) return result;
-            SORTCOLUMN sort = { PKEY_ItemNameDisplay, SORT_ASCENDING };
-            result = view->GetSortColumns(&sort, 1);
+            int count = 0;
+            result = view->GetSortColumnCount(&count);
             if (FAILED(result)) return result;
-            prefs->sortFormat = sort.propkey.fmtid; prefs->sortProperty = sort.propkey.pid; prefs->sortDirection = sort.direction;
+            if (count > 0)
+            {
+                std::vector<SORTCOLUMN> columns(count);
+                result = view->GetSortColumns(columns.data(), count);
+                if (FAILED(result)) return result;
+                primarySort = columns.front();
+            }
+            // Zero columns is a valid post-drop state, not an invalid argument.
+            // Keep the last configured rule for persistence and layout repair.
+            prefs->sortFormat = primarySort.propkey.fmtid; prefs->sortProperty = primarySort.propkey.pid; prefs->sortDirection = primarySort.direction;
             return S_OK;
         }
         HRESULT SetPreferences(const DesktopPreferences* prefs)
@@ -1058,7 +1179,9 @@ namespace
             result = view->SetViewModeAndIconSize(FVM_ICON, prefs->iconSize);
             if (FAILED(result)) return result;
             SORTCOLUMN sort = { { prefs->sortFormat, prefs->sortProperty }, prefs->sortDirection == SORT_DESCENDING ? SORT_DESCENDING : SORT_ASCENDING };
-            result = view->SetSortColumns(&sort, 1); QueueLayout(); return result;
+            result = view->SetSortColumns(&sort, 1);
+            if (SUCCEEDED(result)) primarySort = sort;
+            QueueLayout(); return result;
         }
         int Count() { int count = -1; if (view) view->ItemCount(SVGIO_ALLVIEW, &count); return count; }
         HRESULT ItemPosition(int index, wchar_t* name, UINT capacity, POINT* point)

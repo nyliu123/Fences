@@ -39,7 +39,15 @@ public:
         CoTaskMemFree(text);
         text = nullptr;
         if (filesystem && item && SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &text))) path = text;
-        CoTaskMemFree(text); return result;
+        CoTaskMemFree(text);
+        // Editing names may already omit .lnk or another hidden extension.
+        // Only strip an extension from selection when this is the real filename;
+        // otherwise a dot in the visible stem would be mistaken for its suffix.
+        const auto separator = path.find_last_of(L"\\/");
+        const auto attributesOnDisk = path.empty() ? INVALID_FILE_ATTRIBUTES : GetFileAttributesW(path.c_str());
+        file = filesystem && attributesOnDisk != INVALID_FILE_ATTRIBUTES && !(attributesOnDisk & FILE_ATTRIBUTE_DIRECTORY) &&
+            separator != std::wstring::npos && path.substr(separator + 1) == name;
+        return result;
     }
     bool Matches(PCUITEMID_CHILD candidate) const
     {
